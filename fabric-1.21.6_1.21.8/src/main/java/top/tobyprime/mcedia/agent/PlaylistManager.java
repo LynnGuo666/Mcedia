@@ -60,8 +60,18 @@ public class PlaylistManager {
     // --- 核心流程控制方法 ---
 
     public boolean updatePlaylistFromBook(ItemStack mainHandItem, PlayerAgent.PlaybackSource currentSource) {
+        // If we are in COMMAND mode, a new book should switch back to BOOK mode.
+        // (The UI message says the book will be ignored until a new book is inserted.)
         if (currentSource == PlayerAgent.PlaybackSource.COMMAND) {
-            return false;
+            List<String> bookPages = getBookPages(mainHandItem);
+            String newPlaylistContent = bookPages != null ? String.join("\n", bookPages) : "";
+            if (newPlaylistContent.isBlank()) {
+                return false;
+            }
+            agent.switchToBookSource();
+            currentPlaylistContent = newPlaylistContent;
+            updatePlaylist(bookPages);
+            return true;
         }
 
         List<String> bookPages = getBookPages(mainHandItem);
@@ -334,9 +344,28 @@ public class PlaylistManager {
     public void commandSetUrl(String url) {
         LOGGER.info("通过指令设置播放URL: {}", url);
         agent.switchToCommandSource();
-        List<String> pages = Collections.singletonList(url);
-        this.currentPlaylistContent = String.join("\n", pages);
-        updatePlaylist(pages);
+        playlist.clear();
+        playlistOriginalSize = 0;
+        currentPlayingItem = null;
+
+        String raw = url == null ? "" : url.trim();
+        if (raw.isEmpty()) {
+            Mcedia.msgToPlayer("§c[Mcedia] §fURL为空。请提供 http(s) 直链。\n§7例如: [m3u8]https://.../index.m3u8");
+            return;
+        }
+
+        boolean forceDirect = raw.toLowerCase(Locale.ROOT).contains("[m3u8]");
+        String cleaned = raw.replace("[m3u8]", "").replace("[M3U8]", "").trim();
+
+        PlayerAgent.PlaybackItem item;
+        if (cleaned.equalsIgnoreCase("rickroll")) item = new PlayerAgent.PlaybackItem(RICKROLL_URL);
+        else if (cleaned.equalsIgnoreCase("badapple")) item = new PlayerAgent.PlaybackItem(BAD_APPLE_URL);
+        else item = new PlayerAgent.PlaybackItem(cleaned);
+        item.forceDirect = forceDirect || isM3u8Url(item.originalUrl);
+        playlist.offer(item);
+        playlistOriginalSize = 1;
+
+        this.currentPlaylistContent = item.originalUrl;
         startPlaylist();
         Mcedia.msgToPlayer("§f[Mcedia] §7正在尝试播放新链接...");
     }
