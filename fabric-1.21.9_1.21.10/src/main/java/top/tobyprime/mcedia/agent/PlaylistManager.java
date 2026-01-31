@@ -26,6 +26,9 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.DateTimeException;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
@@ -40,6 +43,7 @@ public class PlaylistManager {
     private static final String BAD_APPLE_URL = "https://www.bilibili.com/video/BV1xx411c79H";
     private static final Pattern TIMESTAMP_PATTERN = Pattern.compile("^(\\d{1,2}:)?(\\d{1,2}):(\\d{1,2})$");
     private static final Pattern P_NUMBER_PATTERN = Pattern.compile("^[pP]?(\\d+)$");
+    private static final Pattern ABSOLUTE_START_PATTERN = Pattern.compile("^(\\d{4})-(\\d{1,2})-(\\d{1,2})\\s+(\\d{1,2}):(\\d{1,2}):(\\d{1,2})$");
     private static final int ITEMS_PER_PAGE_PLAYLIST = 7;
 
     // --- 核心字段 ---
@@ -98,7 +102,14 @@ public class PlaylistManager {
                 playNextInQueue();
             } else {
                 LOGGER.info("单项循环: 重新播放 '{}'。", currentPlayingItem.originalUrl);
-                agent.startPlayback(currentPlayingItem.originalUrl, true, 0, agent.getConfigManager().desiredQuality);
+                long seekUs = 0;
+                if (currentPlayingItem.absoluteStartEpochMs != null) {
+                    long deltaMs = System.currentTimeMillis() - currentPlayingItem.absoluteStartEpochMs;
+                    seekUs = Math.max(0, deltaMs * 1000L);
+                }
+                seekUs += currentPlayingItem.timestampUs;
+                seekUs += agent.parseBiliTimestampToUs(currentPlayingItem.originalUrl);
+                agent.startPlayback(currentPlayingItem.originalUrl, true, seekUs, agent.getConfigManager().desiredQuality, currentPlayingItem.forceDirect);
             }
         } else if (!playlist.isEmpty()) {
             LOGGER.info("顺序播放: 播放列表下一项。");
@@ -143,6 +154,8 @@ public class PlaylistManager {
 
             if (item == null) continue;
 
+            item.forceDirect = currentLine.toLowerCase(Locale.ROOT).contains("[m3u8]") || isM3u8Url(item.originalUrl);
+
             boolean isBiliVideo = item.originalUrl.contains("bilibili.com/video/");
             boolean isBiliBangumi = item.originalUrl.contains("bilibili.com/bangumi/play/");
 
@@ -162,6 +175,13 @@ public class PlaylistManager {
                 String parameterLine = lines.get(nextLineIndex).trim();
                 if (parameterLine.isEmpty() || URL_PATTERN.matcher(parameterLine).find() || parameterLine.equalsIgnoreCase("rickroll") || parameterLine.equalsIgnoreCase("badapple")) {
                     break;
+                }
+
+                Long absStartMs = parseAbsoluteStartEpochMs(parameterLine);
+                if (absStartMs != null) {
+                    item.absoluteStartEpochMs = absStartMs;
+                    nextLineIndex++;
+                    continue;
                 }
 
                 String[] parts = parameterLine.split("\\s+");
@@ -190,7 +210,8 @@ public class PlaylistManager {
             }
             playlist.offer(item);
             playlistOriginalSize++;
-            LOGGER.info("添加项目: URL='{}', Mode={}, P={}, Timestamp={}us, Quality='{}'", item.originalUrl, item.mode, item.pNumber, item.timestampUs, item.desiredQuality);
+            LOGGER.info("添加项目: URL='{}', Mode={}, P={}, Timestamp={}us, AbsStartMs={}, ForceDirect={}, Quality='{}'",
+                    item.originalUrl, item.mode, item.pNumber, item.timestampUs, item.absoluteStartEpochMs, item.forceDirect, item.desiredQuality);
             i = nextLineIndex - 1;
         }
         LOGGER.info("播放列表更新完成，共找到 {} 个媒体项目。", playlistOriginalSize);
@@ -213,24 +234,31 @@ public class PlaylistManager {
             }
 
             long finalSeekTimestampUs = 0;
-            long serverSyncTime = agent.getServerDuration();
-            if (serverSyncTime > 0) {
-                finalSeekTimestampUs = serverSyncTime;
-                LOGGER.info("应用服务器实时同步时间: {}us", serverSyncTime);
-                if (McediaConfig.RESUME_ON_RELOAD_ENABLED) {
-                    Mcedia.getInstance().savePlayerProgress(agent.getEntity().getUUID(), 0);
-                }
+            if (nextItem.absoluteStartEpochMs != null) {
+                long deltaMs = System.currentTimeMillis() - nextItem.absoluteStartEpochMs;
+                finalSeekTimestampUs = Math.max(0, deltaMs * 1000L);
+                LOGGER.info("应用绝对开始时间同步: {}ms -> {}us", nextItem.absoluteStartEpochMs, finalSeekTimestampUs);
             } else {
-                if (McediaConfig.RESUME_ON_RELOAD_ENABLED) {
-                    long resumeTime = Mcedia.getInstance().loadPlayerProgress(agent.getEntity().getUUID());
-                    if (resumeTime > 0) {
-                        finalSeekTimestampUs += resumeTime;
-                        LOGGER.info("读取到断点续播时间: {}us", resumeTime);
+                long serverSyncTime = agent.getServerDuration();
+                if (serverSyncTime > 0) {
+                    finalSeekTimestampUs = serverSyncTime;
+                    LOGGER.info("应用服务器实时同步时间: {}us", serverSyncTime);
+                    if (McediaConfig.RESUME_ON_RELOAD_ENABLED) {
+                        Mcedia.getInstance().savePlayerProgress(agent.getEntity().getUUID(), 0);
+                    }
+                } else {
+                    if (McediaConfig.RESUME_ON_RELOAD_ENABLED) {
+                        long resumeTime = Mcedia.getInstance().loadPlayerProgress(agent.getEntity().getUUID());
+                        if (resumeTime > 0) {
+                            finalSeekTimestampUs += resumeTime;
+                            LOGGER.info("读取到断点续播时间: {}us", resumeTime);
+                        }
                     }
                 }
-                finalSeekTimestampUs += nextItem.timestampUs;
-                finalSeekTimestampUs += agent.parseBiliTimestampToUs(nextItem.originalUrl);
             }
+
+            finalSeekTimestampUs += nextItem.timestampUs;
+            finalSeekTimestampUs += agent.parseBiliTimestampToUs(urlToPlay);
 
             String qualityForNextPlayback = (nextItem.desiredQuality != null && !nextItem.desiredQuality.isBlank())
                     ? nextItem.desiredQuality
@@ -238,7 +266,7 @@ public class PlaylistManager {
 
             LOGGER.info("准备播放: URL='{}', Mode={}, P={}, 最终跳转时间={}us", urlToPlay, nextItem.mode, nextItem.pNumber, finalSeekTimestampUs);
 
-            agent.startPlayback(urlToPlay, false, finalSeekTimestampUs, qualityForNextPlayback);
+            agent.startPlayback(urlToPlay, false, finalSeekTimestampUs, qualityForNextPlayback, nextItem.forceDirect);
         } else {
             this.currentPlayingItem = null;
             LOGGER.info("播放列表已为空，播放结束。");
@@ -461,5 +489,35 @@ public class PlaylistManager {
             }
         } catch (Exception ignored) {}
         return 1;
+    }
+
+    private static boolean isM3u8Url(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        int idx = lower.indexOf(".m3u8");
+        if (idx < 0) return false;
+        int end = idx + 5;
+        if (end == lower.length()) return true;
+        char c = lower.charAt(end);
+        return c == '?' || c == '#';
+    }
+
+    @Nullable
+    private static Long parseAbsoluteStartEpochMs(String line) {
+        if (line == null) return null;
+        Matcher m = ABSOLUTE_START_PATTERN.matcher(line.trim());
+        if (!m.matches()) return null;
+        try {
+            int year = Integer.parseInt(m.group(1));
+            int month = Integer.parseInt(m.group(2));
+            int day = Integer.parseInt(m.group(3));
+            int hour = Integer.parseInt(m.group(4));
+            int minute = Integer.parseInt(m.group(5));
+            int second = Integer.parseInt(m.group(6));
+            LocalDateTime ldt = LocalDateTime.of(year, month, day, hour, minute, second);
+            return ldt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        } catch (NumberFormatException | DateTimeException e) {
+            return null;
+        }
     }
 }

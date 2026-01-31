@@ -30,6 +30,7 @@ import top.tobyprime.mcedia.video_fetcher.UrlExpander;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -56,6 +57,7 @@ public class PlayerAgent {
 
     // --- 状态与缓存字段 ---
     private String playingUrl;
+    private volatile boolean forceDirectPlayback = false;
     private ItemStack preMainHandItemStack = ItemStack.EMPTY;
     private ItemStack preOffHandItemStack = ItemStack.EMPTY;
     @Nullable
@@ -84,6 +86,9 @@ public class PlayerAgent {
         public final String originalUrl;
         public int pNumber = 1;
         public long timestampUs = 0;
+        public boolean forceDirect = false;
+        @Nullable
+        public Long absoluteStartEpochMs = null;
         public BiliPlaybackMode mode = BiliPlaybackMode.NONE;
         @Nullable
         public String desiredQuality = null;
@@ -142,7 +147,7 @@ public class PlayerAgent {
                 if (currentMedia.needsReconnect()) {
                     LOGGER.warn("检测到媒体流中断，正在尝试自动重连: {}", playingUrl);
                     isReconnecting = true;
-                    startPlayback(playingUrl, false, currentMedia.getDurationUs(), configManager.desiredQuality);
+                    startPlayback(playingUrl, false, currentMedia.getDurationUs(), configManager.desiredQuality, this.forceDirectPlayback);
                     return;
                 }
                 if (currentMedia.isEnded()) {
@@ -167,7 +172,7 @@ public class PlayerAgent {
                 case RELOAD_MEDIA:
                     LOGGER.info("检测到清晰度变更: '{}'，正在软重载...", configManager.desiredQuality);
                     long seekTo = !currentMedia.isLiveStream() ? currentMedia.getDurationUs() : 0;
-                    startPlayback(playingUrl, false, seekTo, configManager.desiredQuality);
+                    startPlayback(playingUrl, false, seekTo, configManager.desiredQuality, this.forceDirectPlayback);
                     break;
 
                 case HOT_UPDATE:
@@ -199,12 +204,17 @@ public class PlayerAgent {
     // --- 核心播放流程 ---
 
     public void startPlayback(String url, boolean isLooping, long initialSeekUs, String quality) {
+        startPlayback(url, isLooping, initialSeekUs, quality, false);
+    }
+
+    public void startPlayback(String url, boolean isLooping, long initialSeekUs, String quality, boolean forceDirect) {
         if (url == null || url.isBlank()) {
             stopPlayback();
             return;
         }
 
         this.playingUrl = url;
+        this.forceDirectPlayback = forceDirect || isM3u8Url(url);
         this.isReconnecting = false;
         this.currentStatus = PlaybackStatus.LOADING;
         final long currentToken = this.playbackToken.incrementAndGet();
@@ -242,22 +252,23 @@ public class PlayerAgent {
                         handlePlaybackSuccess(cachedInfo, initialUrl, isLooping, null);
                     } else {
                         LOGGER.error("从缓存打开媒体后未能获取Media实例，回退到网络播放。");
-                        fallbackToNetworkPlayback(initialUrl, isLooping, currentToken, initialSeekUs, quality);
+                        fallbackToNetworkPlayback(initialUrl, isLooping, currentToken, initialSeekUs, quality, this.forceDirectPlayback);
                     }
                     return;
                 }
             }
-            fallbackToNetworkPlayback(initialUrl, isLooping, currentToken, initialSeekUs, quality);
+            fallbackToNetworkPlayback(initialUrl, isLooping, currentToken, initialSeekUs, quality, this.forceDirectPlayback);
         });
     }
 
-    private void fallbackToNetworkPlayback(String url, boolean isLooping, long token, long initialSeekUs, String quality) {
+    private void fallbackToNetworkPlayback(String url, boolean isLooping, long token, long initialSeekUs, String quality, boolean forceDirect) {
         CompletableFuture<VideoInfo> videoInfoFuture = UrlExpander.expand(url).thenComposeAsync(expandedUrl -> {
             if (playbackToken.get() != token) {
                 return CompletableFuture.failedFuture(new IllegalStateException("Playback aborted by new request."));
             }
             this.timestampFromUrlUs = parseTimestampFromUrl(expandedUrl);
-            IMediaProvider provider = MediaProviderRegistry.getInstance().getProviderForUrl(expandedUrl);
+            boolean useDirect = forceDirect || isM3u8Url(expandedUrl);
+            IMediaProvider provider = useDirect ? new DirectLinkProvider() : MediaProviderRegistry.getInstance().getProviderForUrl(expandedUrl);
             if (provider != null) {
                 String warning = provider.getSafetyWarning();
                 if (warning != null && !warning.isEmpty()) Mcedia.msgToPlayer(warning);
@@ -374,6 +385,17 @@ public class PlayerAgent {
         }
 
         player.play();
+    }
+
+    private static boolean isM3u8Url(@Nullable String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        int idx = lower.indexOf(".m3u8");
+        if (idx < 0) return false;
+        int end = idx + 5;
+        if (end == lower.length()) return true;
+        char c = lower.charAt(end);
+        return c == '?' || c == '#';
     }
 
     private void handlePlaybackFailure(Throwable throwable, String initialUrl, boolean isLooping) {

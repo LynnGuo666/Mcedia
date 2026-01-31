@@ -3,6 +3,8 @@ package top.tobyprime.mcedia.provider;
 import org.jetbrains.annotations.Nullable;
 import top.tobyprime.mcedia.interfaces.IMediaProvider;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.nio.file.Path;
 
 /**
@@ -25,7 +27,11 @@ public class DirectLinkProvider implements IMediaProvider {
      */
     @Override
     public VideoInfo resolve(String url, @Nullable String cookie, String desiredQuality) throws Exception {
-        return new VideoInfo(url, null);
+        // For arbitrary direct links (especially m3u8), avoid injecting Bilibili-specific headers.
+        // MediaDecoder will use these custom headers verbatim.
+        Map<String, String> headers = new HashMap<>();
+        headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        return new VideoInfo(url, null, "Direct link", "Mcedia", headers);
     }
 
     /**

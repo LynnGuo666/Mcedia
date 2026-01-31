@@ -28,7 +28,11 @@ public class YtDlpProvider implements IMediaProvider {
 
     @Override
     public boolean isSupported(String url) {
-        return url.startsWith("http");
+        if (url == null || !url.startsWith("http")) return false;
+        String lower = url.toLowerCase(Locale.ROOT);
+        // Let direct m3u8 links bypass yt-dlp and go straight to FFmpeg.
+        if (lower.matches(".*\\.m3u8($|[?#&]).*")) return false;
+        return true;
     }
 
     @Override
