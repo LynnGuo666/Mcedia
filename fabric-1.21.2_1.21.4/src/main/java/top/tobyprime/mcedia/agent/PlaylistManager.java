@@ -101,14 +101,7 @@ public class PlaylistManager {
                 playNextInQueue();
             } else {
                 LOGGER.info("单项循环: 重新播放 '{}'。", currentPlayingItem.originalUrl);
-                long seekUs = 0;
-                if (currentPlayingItem.absoluteStartEpochMs != null) {
-                    long deltaMs = System.currentTimeMillis() - currentPlayingItem.absoluteStartEpochMs;
-                    seekUs = Math.max(0, deltaMs * 1000L);
-                }
-                seekUs += currentPlayingItem.timestampUs;
-                seekUs += agent.parseBiliTimestampToUs(currentPlayingItem.originalUrl);
-                agent.startPlayback(currentPlayingItem.originalUrl, true, seekUs, agent.getConfigManager().desiredQuality, currentPlayingItem.forceDirect);
+                agent.startPlayback(currentPlayingItem.originalUrl, true, 0, agent.getConfigManager().desiredQuality, currentPlayingItem.forceDirect);
             }
         } else if (!playlist.isEmpty()) {
             LOGGER.info("顺序播放: 播放列表下一项。");

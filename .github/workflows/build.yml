@@ -7,6 +7,16 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - fabric-1.21_1.21.1
+          - fabric-1.21.2_1.21.4
+          - fabric-1.21.5
+          - fabric-1.21.6_1.21.8
+          - fabric-1.21.9_1.21.10
+          - paper-1.21.7
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,12 +32,12 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build
-        run: ./gradlew --no-daemon build
+        run: ./gradlew --no-daemon ":${{ matrix.project }}:build"
 
       - name: Upload JARs
         uses: actions/upload-artifact@v4
         with:
-          name: jars
+          name: jars-${{ matrix.project }}
           if-no-files-found: warn
           path: |
-            **/build/libs/*.jar
+            ${{ matrix.project }}/build/libs/*.jar

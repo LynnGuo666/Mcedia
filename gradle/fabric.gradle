@@ -12,6 +12,12 @@ repositories {
 
 apply plugin: 'fabric-loom'
 
+loom {
+    // Using official Mojang mappings prints a license warning by default.
+    // This silences the warning (you still must comply with the license).
+    silentMojangMappingsLicense()
+}
+
 def minecraftVersion = property('minecraft_version')
 def loaderVersion = property('loader_version')
 def fabricVersion = property('fabric_version')

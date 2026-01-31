@@ -101,14 +101,7 @@ public class PlaylistManager {
                 playNextInQueue();
             } else {
                 LOGGER.info("单项循环: 重新播放 '{}'。", currentPlayingItem.originalUrl);
-                long seekUs = 0;
-                if (currentPlayingItem.absoluteStartEpochMs != null) {
-                    long deltaMs = System.currentTimeMillis() - currentPlayingItem.absoluteStartEpochMs;
-                    seekUs = Math.max(0, deltaMs * 1000L);
-                }
-                seekUs += currentPlayingItem.timestampUs;
-                seekUs += agent.parseBiliTimestampToUs(currentPlayingItem.originalUrl);
-                agent.startPlayback(currentPlayingItem.originalUrl, true, seekUs, agent.getConfigManager().desiredQuality, currentPlayingItem.forceDirect);
+                agent.startPlayback(currentPlayingItem.originalUrl, true, 0, agent.getConfigManager().desiredQuality, currentPlayingItem.forceDirect);
             }
         } else if (!playlist.isEmpty()) {
             LOGGER.info("顺序播放: 播放列表下一项。");
@@ -237,6 +230,8 @@ public class PlaylistManager {
                 long deltaMs = System.currentTimeMillis() - nextItem.absoluteStartEpochMs;
                 finalSeekTimestampUs = Math.max(0, deltaMs * 1000L);
                 LOGGER.info("应用绝对开始时间同步: {}ms -> {}us", nextItem.absoluteStartEpochMs, finalSeekTimestampUs);
+                finalSeekTimestampUs += nextItem.timestampUs;
+                finalSeekTimestampUs += agent.parseBiliTimestampToUs(urlToPlay);
             } else {
                 long serverSyncTime = agent.getServerDuration();
                 if (serverSyncTime > 0) {
@@ -253,11 +248,10 @@ public class PlaylistManager {
                             LOGGER.info("读取到断点续播时间: {}us", resumeTime);
                         }
                     }
+                    finalSeekTimestampUs += nextItem.timestampUs;
+                    finalSeekTimestampUs += agent.parseBiliTimestampToUs(nextItem.originalUrl);
                 }
             }
-
-            finalSeekTimestampUs += nextItem.timestampUs;
-            finalSeekTimestampUs += agent.parseBiliTimestampToUs(urlToPlay);
 
             String qualityForNextPlayback = (nextItem.desiredQuality != null && !nextItem.desiredQuality.isBlank())
                     ? nextItem.desiredQuality
